@@ -16,14 +16,20 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define REQUIRE_ZFH(ctx) do { \
+#define REQUIRE_ZFH(ctx) do {          \
     if (!ctx->cfg_ptr->ext_zfh) {      \
-        return false;         \
-    }                         \
+        return false;                  \
+    }                                  \
+    if(!smstateen_fcsr_check(ctx)) {   \
+        return false;                  \
+    }                                  \
 } while (0)
 
 #define REQUIRE_ZHINX_OR_ZFH(ctx) do { \
     if (!ctx->cfg_ptr->ext_zhinx && !ctx->cfg_ptr->ext_zfh) { \
+        return false;                  \
+    }                                  \
+    if(!smstateen_fcsr_check(ctx)) {   \
         return false;                  \
     }                                  \
 } while (0)
@@ -32,10 +38,16 @@
     if (!ctx->cfg_ptr->ext_zfhmin) {          \
         return false;                         \
     }                                         \
+    if(!smstateen_fcsr_check(ctx)) {          \
+        return false;                         \
+    }                                         \
 } while (0)
 
 #define REQUIRE_ZFHMIN_OR_ZHINXMIN(ctx) do {                 \
     if (!(ctx->cfg_ptr->ext_zfhmin || ctx->cfg_ptr->ext_zhinxmin)) { \
+        return false;                                        \
+    }                                                        \
+    if(!smstateen_fcsr_check(ctx)) {                         \
         return false;                                        \
     }                                                        \
 } while (0)

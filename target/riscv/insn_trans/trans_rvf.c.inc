@@ -24,10 +24,26 @@
             return false; \
 } while (0)
 
-#define REQUIRE_ZFINX_OR_F(ctx) do {\
-    if (!ctx->cfg_ptr->ext_zfinx) { \
-        REQUIRE_EXT(ctx, RVF); \
-    } \
+static inline bool smstateen_fcsr_check(DisasContext *ctx)
+{
+#ifndef CONFIG_USER_ONLY
+    if (!has_ext(ctx, RVF) && !ctx->smstateen_fcsr_ok) {
+        ctx->virt_inst_excp = ctx->virt_enabled;
+        return false;
+    }
+#endif
+    return true;
+}
+
+#define REQUIRE_ZFINX_OR_F(ctx) do {           \
+    if (!has_ext(ctx, RVF)) {                  \
+        if (!ctx->cfg_ptr->ext_zfinx) {        \
+            return false;                      \
+        }                                      \
+        if (!smstateen_fcsr_check(ctx)) {      \
+            return false;                      \
+        }                                      \
+    }                                          \
 } while (0)
 
 #define REQUIRE_ZCF(ctx) do {                  \

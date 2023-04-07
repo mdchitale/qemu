@@ -18,10 +18,15 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define REQUIRE_ZDINX_OR_D(ctx) do { \
-    if (!ctx->cfg_ptr->ext_zdinx) { \
-        REQUIRE_EXT(ctx, RVD); \
-    } \
+#define REQUIRE_ZDINX_OR_D(ctx) do {           \
+    if (!has_ext(ctx, RVD)) {                  \
+        if (!ctx->cfg_ptr->ext_zdinx) {        \
+            return false;                      \
+        }                                      \
+        if (!smstateen_fcsr_check(ctx)) {      \
+            return false;                      \
+        }                                      \
+    }                                          \
 } while (0)
 
 #define REQUIRE_EVEN(ctx, reg) do { \
