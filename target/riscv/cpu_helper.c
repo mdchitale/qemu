@@ -105,6 +105,16 @@ void cpu_get_tb_cpu_state(CPURISCVState *env, target_ulong *pc,
         flags = FIELD_DP32(flags, TB_FLAGS, MSTATUS_HS_VS,
                            get_field(env->mstatus_hs, MSTATUS_VS));
     }
+    /*
+     * If misa.F is 0 then the MSTATUS_HS_FS field of the tb->flags
+     * can be used to pass the current state of the smstateen.FCSR bit
+     * which must be checked for in the floating point translation routines
+     */
+    if (!riscv_has_ext(env, RVF)) {
+        if (smstateen_acc_ok(env, 0, SMSTATEEN0_FCSR) != RISCV_EXCP_NONE) {
+            flags = FIELD_DP32(flags, TB_FLAGS, MSTATUS_HS_FS, 1);
+        }
+    }
     if (cpu->cfg.debug && !icount_enabled()) {
         flags = FIELD_DP32(flags, TB_FLAGS, ITRIGGER, env->itrigger_enabled);
     }
