@@ -2255,6 +2255,25 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         sxlen = 16 << riscv_cpu_sxl(env);
         env->scause = cause | ((target_ulong)async << (sxlen - 1));
         env->sepc = env->pc;
+        /*
+         * Complete a pending Sspesa capture when LCOFI is delivered.
+         * Sspesa records only U/S samples; V identifies guest execution.
+         */
+        if (async && cause == IRQ_PMU_OVF) {
+            if (riscv_cpu_cfg(env)->ext_sspesa &&
+                env->sspesa_capture_pending) {
+                if (prev_priv == PRV_U || prev_priv == PRV_S) {
+                    env->shpmspc = env->pc;
+                    env->shpmsdata &= ~(SHPMSDATA_MODE | SHPMSDATA_V);
+                    if (prev_priv == PRV_S) {
+                        env->shpmsdata |= SHPMSDATA_MODE_S;
+                    }
+                    if (prev_virt) {
+                        env->shpmsdata |= SHPMSDATA_V;
+                    }
+                }
+            }
+        }
         env->stval = tval;
         env->htval = htval;
         env->htinst = tinst;
