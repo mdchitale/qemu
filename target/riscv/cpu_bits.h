@@ -607,6 +607,10 @@
 
 /* shpmsdata fields */
 #define SHPMSDATA_CNTRID    0x1f
+#define SHPMSDATA_MODE      0x60
+#define SHPMSDATA_V         0x80
+#define SHPMSDATA_MODE_U    0x00
+#define SHPMSDATA_MODE_S    0x20
 
 /* Crypto Extension */
 #define CSR_SEED            0x015
