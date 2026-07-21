@@ -1258,6 +1258,18 @@ static RISCVException write_mhpmevent(CPURISCVState *env, int csrno,
         mhpmevt_val = val & inh_avail_mask;
     }
 
+    /*
+     * Sspesa: software clears mhpmeventN.OF to acknowledge the LCOFI. When the
+     * OF bit of the counter recorded in shpmsdata.CNTRID is cleared, re-arm the
+     * sample capture so the next overflow can update shpmspc/shpmsdata.
+     */
+    if (riscv_cpu_cfg(env)->ext_sspesa && env->sspesa_capture_pending &&
+        (env->shpmsdata & SHPMSDATA_CNTRID) == (uint32_t)evt_index &&
+        (env->mhpmevent_val[evt_index] & MHPMEVENT_BIT_OF) &&
+        !(mhpmevt_val & MHPMEVENT_BIT_OF)) {
+        env->sspesa_capture_pending = false;
+    }
+
     env->mhpmevent_val[evt_index] = mhpmevt_val;
     riscv_pmu_update_event_map(env, mhpmevt_val, evt_index);
 
@@ -1287,6 +1299,14 @@ static RISCVException write_mhpmeventh(CPURISCVState *env, int csrno,
                        riscv_has_ext(env, RVU)) ? MHPMEVENTH_BIT_VUINH : 0;
     inh_avail_mask |= (riscv_has_ext(env, RVH) &&
                        riscv_has_ext(env, RVS)) ? MHPMEVENTH_BIT_VSINH : 0;
+
+    /* Sspesa: re-arm capture when software clears OF for the captured counter */
+    if (riscv_cpu_cfg(env)->ext_sspesa && env->sspesa_capture_pending &&
+        (env->shpmsdata & SHPMSDATA_CNTRID) == (uint32_t)evt_index &&
+        (env->mhpmevent_val[evt_index] & MHPMEVENT_BIT_OF) &&
+        !((val & inh_avail_mask) & MHPMEVENTH_BIT_OF)) {
+        env->sspesa_capture_pending = false;
+    }
 
     env->mhpmevent_val[evt_index] = deposit64(env->mhpmevent_val[evt_index],
                                               32, 32, val & inh_avail_mask);

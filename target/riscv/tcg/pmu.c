@@ -147,6 +147,37 @@ void riscv_pmu_update_fixed_ctrs(CPURISCVState *env,
     riscv_pmu_icount_update_priv(env, newpriv, new_virt);
 }
 
+static void riscv_pmu_sspesa_capture(CPURISCVState *env, uint32_t ctr_idx)
+{
+    RISCVCPU *cpu = env_archcpu(env);
+
+    if (!cpu->cfg.ext_sspesa) {
+        return;
+    }
+
+    /*
+     * Only the first overflow leading to an LCOFI updates the sample CSRs;
+     * later overflows must not overwrite shpmsdata until software clears the
+     * OF bit and re-arms capture. If a capture is already pending, keep the
+     * numerically lowest counter ID (spec: CNTRID holds the lowest counter on
+     * simultaneous overflow).
+     */
+    if (env->sspesa_capture_pending) {
+        if ((ctr_idx & SHPMSDATA_CNTRID) <
+            (env->shpmsdata & SHPMSDATA_CNTRID)) {
+            env->shpmsdata = ctr_idx & SHPMSDATA_CNTRID;
+        }
+        return;
+    }
+
+    /*
+     * Latch the counter ID now; shpmspc is captured from the interrupted PC
+     * when the LCOFI is actually delivered (see riscv_cpu_do_interrupt()).
+     */
+    env->shpmsdata = ctr_idx & SHPMSDATA_CNTRID;
+    env->sspesa_capture_pending = true;
+}
+
 int riscv_pmu_incr_ctr(RISCVCPU *cpu, enum riscv_pmu_event_idx event_idx)
 {
     uint32_t ctr_idx;
@@ -191,6 +222,7 @@ int riscv_pmu_incr_ctr(RISCVCPU *cpu, enum riscv_pmu_event_idx event_idx)
         /* Generate interrupt only if OF bit is clear */
         if (!(env->mhpmevent_val[ctr_idx] & MHPMEVENT_BIT_OF)) {
             env->mhpmevent_val[ctr_idx] |= MHPMEVENT_BIT_OF;
+            riscv_pmu_sspesa_capture(env, ctr_idx);
             riscv_cpu_update_mip(env, MIP_LCOFIP, BOOL_TO_MASK(1));
         }
     } else {
@@ -383,6 +415,7 @@ static void pmu_timer_trigger_irq(RISCVCPU *cpu,
 
     if (cpu->pmu_avail_ctrs & BIT(ctr_idx)) {
         if (pmu_hpmevent_set_of_if_clear(env, ctr_idx)) {
+            riscv_pmu_sspesa_capture(env, ctr_idx);
             riscv_cpu_update_mip(env, MIP_LCOFIP, BOOL_TO_MASK(1));
         }
     }

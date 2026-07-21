@@ -2255,6 +2255,16 @@ void riscv_cpu_do_interrupt(CPUState *cs)
         sxlen = 16 << riscv_cpu_sxl(env);
         env->scause = cause | ((target_ulong)async << (sxlen - 1));
         env->sepc = env->pc;
+        /*
+         * Sspesa: when a Local Counter Overflow Interrupt is delivered, latch
+         * the sample PC to the interrupted instruction (the value that becomes
+         * sepc). The overflowing counter ID was already recorded in shpmsdata
+         * by the PMU overflow path.
+         */
+        if (async && cause == IRQ_PMU_OVF && riscv_cpu_cfg(env)->ext_sspesa &&
+            env->sspesa_capture_pending) {
+            env->shpmspc = env->pc;
+        }
         env->stval = tval;
         env->htval = htval;
         env->htinst = tinst;
