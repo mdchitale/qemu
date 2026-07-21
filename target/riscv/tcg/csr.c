@@ -276,6 +276,27 @@ static RISCVException smcntrpmf(CPURISCVState *env, int csrno)
     return RISCV_EXCP_NONE;
 }
 
+static RISCVException sspesa(CPURISCVState *env, int csrno)
+{
+    bool menvcfg_cde;
+
+    if (!riscv_cpu_cfg(env)->ext_sspesa) {
+        return RISCV_EXCP_ILLEGAL_INST;
+    }
+
+    if (env->priv == PRV_M) {
+        return RISCV_EXCP_NONE;
+    }
+
+    menvcfg_cde = get_field(env->menvcfg, MENVCFG_CDE);
+    /* Access to shpmspc/shpmsdata from VS-mode always causes a fault */
+    if (env->virt_enabled) {
+        return menvcfg_cde ? RISCV_EXCP_VIRT_INSTRUCTION_FAULT : RISCV_EXCP_ILLEGAL_INST;
+    }
+
+    return menvcfg_cde ? RISCV_EXCP_NONE : RISCV_EXCP_ILLEGAL_INST;
+}
+
 static RISCVException smcntrpmf_32(CPURISCVState *env, int csrno)
 {
     if (riscv_cpu_mxl(env) != MXL_RV32) {
@@ -1669,6 +1690,39 @@ static RISCVException read_scountovf(CPURISCVState *env, int csrno,
         }
     }
 
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException read_shpmspc(CPURISCVState *env, int csrno,
+                                   target_ulong *val)
+{
+    *val = env->shpmspc;
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException write_shpmspc(CPURISCVState *env, int csrno,
+                                    target_ulong val, uintptr_t ra)
+{
+    env->shpmspc = val;
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException read_shpmsdata(CPURISCVState *env, int csrno,
+                                     target_ulong *val)
+{
+    /*
+     * shpmsdata.CNTRID holds the ID of the overflowing counter; the
+     * remaining bits are implementation-defined. Report the last written
+     * value (dummy CNTRID 0 by default).
+     */
+    *val = env->shpmsdata;
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException write_shpmsdata(CPURISCVState *env, int csrno,
+                                      target_ulong val, uintptr_t ra)
+{
+    env->shpmsdata = val;
     return RISCV_EXCP_NONE;
 }
 
@@ -6768,6 +6822,11 @@ riscv_csr_operations csr_ops[CSR_TABLE_SIZE] = {
     [CSR_MHPMCOUNTER31H] = { "mhpmcounter31h", mctr32,  read_hpmcounterh,
                              write_mhpmcounterh                         },
     [CSR_SCOUNTOVF]      = { "scountovf", sscofpmf,  read_scountovf,
+                             .min_priv_ver = PRIV_VERSION_1_12_0 },
+    [CSR_SHPMSPC]        = { "shpmspc",   sspesa, read_shpmspc, write_shpmspc,
+                             .min_priv_ver = PRIV_VERSION_1_12_0 },
+    [CSR_SHPMSDATA]      = { "shpmsdata", sspesa, read_shpmsdata,
+                             write_shpmsdata,
                              .min_priv_ver = PRIV_VERSION_1_12_0 },
 
 #endif /* !CONFIG_USER_ONLY */
