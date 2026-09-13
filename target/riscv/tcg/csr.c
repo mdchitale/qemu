@@ -1812,7 +1812,7 @@ static RISCVException write_stimecmph(CPURISCVState *env, int csrno,
 #define LOCAL_INTERRUPTS   (~0xFFFFULL)
 
 static const uint64_t delegable_ints =
-    S_MODE_INTERRUPTS | VS_MODE_INTERRUPTS | MIP_LCOFIP;
+    S_MODE_INTERRUPTS | VS_MODE_INTERRUPTS;
 static const uint64_t vs_delegable_ints =
     (VS_MODE_INTERRUPTS | LOCAL_INTERRUPTS) & ~MIP_LCOFIP;
 static const uint64_t all_ints = M_MODE_INTERRUPTS | S_MODE_INTERRUPTS |
@@ -1873,6 +1873,50 @@ static const uint64_t hvip_writable_mask = MIP_VSSIP | MIP_VSTIP |
 static const uint64_t hvien_writable_mask = LOCAL_INTERRUPTS;
 
 static const uint64_t vsip_writable_mask = MIP_VSSIP | LOCAL_INTERRUPTS;
+
+/*
+ * Selects whether an interrupt is virtualized for s-mode, vs-mode or not
+ * virtualized.
+ */
+typedef enum {
+    /* mideleg, mie, mip, and alias paths  */
+    INTR_VIRT_NONE,
+    /* mvien, mvip non-alias path */
+    INTR_VIRT_S,
+    /* hvien, hvip, vsie, vsip paths */
+    INTR_VIRT_VS,
+} INTRVirt;
+
+#define IRQ_PRIV_MAX 15
+static uint64_t aia_intr_mask(CPURISCVState *env, INTRVirt virt)
+{
+    const RISCVCPUConfig *cfg = riscv_cpu_cfg(env);
+    uint64_t mask = 0;
+    int i;
+
+    for (i = IRQ_PMU_OVF; i <= IRQ_PRIV_MAX; i++) {
+        if (i > IRQ_PMU_OVF) {
+            /* Skip for now as interrupts 14 and 15 are reserved. */
+            continue;
+        }
+
+        if (virt == INTR_VIRT_S && !cfg->ext_smaia) {
+            continue;
+        }
+
+        if (virt == INTR_VIRT_VS && !cfg->ext_ssaia) {
+            continue;
+        }
+
+        if (i == IRQ_PMU_OVF && !cfg->ext_sscofpmf) {
+            continue;
+        }
+
+        mask |= (1ULL << i);
+    }
+
+    return mask;
+}
 
 /* Machine Information Registers */
 static RISCVException read_zero(CPURISCVState *env, int csrno,
@@ -2247,7 +2291,9 @@ static RISCVException rmw_mideleg64(CPURISCVState *env, int csrno,
                                     uint64_t new_val, uint64_t wr_mask)
 {
     uint64_t mask = wr_mask & delegable_ints;
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_NONE);
 
+    mask |= wr_mask & aia_mask;
     if (ret_val) {
         *ret_val = env->mideleg;
     }
@@ -2298,7 +2344,9 @@ static RISCVException rmw_mie64(CPURISCVState *env, int csrno,
                                 uint64_t new_val, uint64_t wr_mask)
 {
     uint64_t mask = wr_mask & all_ints;
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_NONE);
 
+    mask |= wr_mask & aia_mask;
     if (ret_val) {
         *ret_val = env->mie;
     }
@@ -2348,7 +2396,9 @@ static RISCVException rmw_mvien64(CPURISCVState *env, int csrno,
                                 uint64_t new_val, uint64_t wr_mask)
 {
     uint64_t mask = wr_mask & mvien_writable_mask;
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_S);
 
+    mask |= wr_mask & aia_mask;
     if (ret_val) {
         *ret_val = env->mvien;
     }
@@ -3781,8 +3831,11 @@ static RISCVException rmw_mip64(CPURISCVState *env, int csrno,
                                 uint64_t *ret_val,
                                 uint64_t new_val, uint64_t wr_mask)
 {
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_NONE);
     uint64_t old_mip, mask = wr_mask & delegable_ints;
     uint32_t gin;
+
+    mask |= wr_mask & aia_mask;
 
     /*
      * When mvien[9]=1, mip.SEIP is read-only and reflects only
@@ -3897,9 +3950,12 @@ static RISCVException rmw_mvip64(CPURISCVState *env, int csrno,
      *  alias_mask denotes the bits that come from mip nalias_mask denotes bits
      *  that come from hvip.
      */
-    uint64_t alias_mask = ((S_MODE_INTERRUPTS | LOCAL_INTERRUPTS) &
+    INTRVirt intr_virt = ((csrno == CSR_MVIP) || (csrno == CSR_MVIPH)) ?
+                          INTR_VIRT_S : INTR_VIRT_NONE;
+    uint64_t aia_mask = aia_intr_mask(env, intr_virt);
+    uint64_t alias_mask = ((S_MODE_INTERRUPTS | aia_mask | LOCAL_INTERRUPTS) &
         (env->mideleg | ~env->mvien)) | MIP_STIP;
-    uint64_t nalias_mask = (S_MODE_INTERRUPTS | LOCAL_INTERRUPTS) &
+    uint64_t nalias_mask = (S_MODE_INTERRUPTS | aia_mask | LOCAL_INTERRUPTS) &
         (~env->mideleg & env->mvien);
     uint64_t wr_mask_mvip;
     uint64_t wr_mask_mip;
@@ -3928,8 +3984,8 @@ static RISCVException rmw_mvip64(CPURISCVState *env, int csrno,
         alias_mask &= ~MIP_STIP;
     }
 
-    wr_mask_mip = wr_mask & alias_mask & mvip_writable_mask;
-    wr_mask_mvip = wr_mask & nalias_mask & mvip_writable_mask;
+    wr_mask_mip = wr_mask & alias_mask & (mvip_writable_mask | aia_mask);
+    wr_mask_mvip = wr_mask & nalias_mask & (mvip_writable_mask | aia_mask);
 
     /*
      * For bits set in alias_mask, mvip needs to be alias of mip, so forward
@@ -4062,9 +4118,11 @@ static RISCVException rmw_vsie64(CPURISCVState *env, int csrno,
                                  uint64_t *ret_val,
                                  uint64_t new_val, uint64_t wr_mask)
 {
-    uint64_t alias_mask = (LOCAL_INTERRUPTS | VS_MODE_INTERRUPTS) &
-                            env->hideleg;
-    uint64_t nalias_mask = LOCAL_INTERRUPTS & (~env->hideleg & env->hvien);
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_VS);
+    uint64_t alias_mask = (LOCAL_INTERRUPTS | VS_MODE_INTERRUPTS |
+                           aia_mask) & env->hideleg;
+    uint64_t nalias_mask = (LOCAL_INTERRUPTS | aia_mask) &
+                           (~env->hideleg & env->hvien);
     uint64_t rval, rval_vs, vsbits;
     uint64_t wr_mask_vsie;
     uint64_t wr_mask_mie;
@@ -4132,9 +4190,11 @@ static RISCVException rmw_sie64(CPURISCVState *env, int csrno,
                                 uint64_t *ret_val,
                                 uint64_t new_val, uint64_t wr_mask)
 {
-    uint64_t nalias_mask = (S_MODE_INTERRUPTS | LOCAL_INTERRUPTS) &
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_NONE);
+    uint64_t nalias_mask = (S_MODE_INTERRUPTS | aia_mask | LOCAL_INTERRUPTS) &
         (~env->mideleg & env->mvien);
-    uint64_t alias_mask = (S_MODE_INTERRUPTS | LOCAL_INTERRUPTS) & env->mideleg;
+    uint64_t alias_mask = (S_MODE_INTERRUPTS | aia_mask | LOCAL_INTERRUPTS) &
+        env->mideleg;
     uint64_t sie_mask = wr_mask & nalias_mask;
     RISCVException ret;
 
@@ -4317,6 +4377,7 @@ static RISCVException rmw_vsip64(CPURISCVState *env, int csrno,
                                  uint64_t new_val, uint64_t wr_mask)
 {
     RISCVException ret;
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_VS);
     uint64_t rval, mask = env->hideleg & VS_MODE_INTERRUPTS;
     uint64_t vsbits;
 
@@ -4332,7 +4393,7 @@ static RISCVException rmw_vsip64(CPURISCVState *env, int csrno,
     wr_mask |= vsbits << 1;
 
     ret = rmw_hvip64(env, csrno, &rval, new_val,
-                     wr_mask & mask & vsip_writable_mask);
+                     wr_mask & mask & (vsip_writable_mask | aia_mask));
     if (ret_val) {
         rval &= mask;
         vsbits = rval & VS_MODE_INTERRUPTS;
@@ -4379,7 +4440,9 @@ static RISCVException rmw_sip64(CPURISCVState *env, int csrno,
                                 uint64_t new_val, uint64_t wr_mask)
 {
     RISCVException ret;
-    uint64_t mask = (env->mideleg | env->mvien) & sip_writable_mask;
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_NONE);
+    uint64_t mask = (env->mideleg | env->mvien) &
+                    (sip_writable_mask | aia_mask);
 
     if (env->virt_enabled) {
         if (env->hvictl & HVICTL_VTI) {
@@ -4392,7 +4455,7 @@ static RISCVException rmw_sip64(CPURISCVState *env, int csrno,
 
     if (ret_val) {
         *ret_val &= (env->mideleg | env->mvien) &
-            (S_MODE_INTERRUPTS | LOCAL_INTERRUPTS);
+            (S_MODE_INTERRUPTS | aia_mask | LOCAL_INTERRUPTS);
     }
 
     return ret;
@@ -4734,7 +4797,9 @@ static RISCVException rmw_hvien64(CPURISCVState *env, int csrno,
                                     uint64_t new_val, uint64_t wr_mask)
 {
     uint64_t mask = wr_mask & hvien_writable_mask;
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_VS);
 
+    mask |= wr_mask & aia_mask;
     if (ret_val) {
         *ret_val = env->hvien;
     }
@@ -4858,6 +4923,7 @@ static RISCVException rmw_hvip64(CPURISCVState *env, int csrno,
      */
     uint64_t alias_mask = (env->hideleg | ~env->hvien) | VS_MODE_INTERRUPTS;
     uint64_t nalias_mask = (~env->hideleg & env->hvien);
+    uint64_t aia_mask = aia_intr_mask(env, INTR_VIRT_VS);
     uint64_t wr_mask_hvip;
     uint64_t wr_mask_mip;
 
@@ -4879,8 +4945,8 @@ static RISCVException rmw_hvip64(CPURISCVState *env, int csrno,
         alias_mask &= (env->hideleg | env->hvien);
     }
 
-    wr_mask_hvip = wr_mask & nalias_mask & hvip_writable_mask;
-    wr_mask_mip = wr_mask & alias_mask & hvip_writable_mask;
+    wr_mask_hvip = wr_mask & nalias_mask & (hvip_writable_mask | aia_mask);
+    wr_mask_mip = wr_mask & alias_mask & (hvip_writable_mask | aia_mask);
 
     /* Aliased bits, bits 10, 6, 2 need to come from mip. */
     ret = rmw_mip64(env, csrno, &ret_mip, new_val, wr_mask_mip);
